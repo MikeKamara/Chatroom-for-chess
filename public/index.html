@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chatroom</title>
+<style id="appStyle">
+  :root { --bg:#0f1117; --panel:#171a22; --border:#282d38; --text:#dfe3ec; --dim:#7b8294; --accent:#6c5ce7; }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif;display:flex;justify-content:center;align-items:stretch;overflow:hidden}
+  .wrap{width:100%;max-width:640px;height:100dvh;display:flex;flex-direction:column}
+  .top{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--border)}
+  .title{font-weight:700;white-space:nowrap}
+  .top-right{display:flex;align-items:center;gap:6px}
+  .count{font-size:12px;color:var(--dim);white-space:nowrap}
+  .tbtn{background:transparent;border:1px solid var(--border);color:var(--dim);border-radius:5px;padding:4px 8px;font-size:12px;font-weight:600;cursor:pointer}
+  .tbtn:hover{color:var(--text);border-color:var(--dim)}
+  .log{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+  .msg-name{font-size:12px;color:var(--accent);font-weight:600}
+  .msg-text{font-size:14.5px;line-height:1.4;white-space:pre-wrap;word-break:break-word}
+  .sys{text-align:center;font-size:12px;color:var(--dim)}
+  form{display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
+  input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:10px 12px;font-size:14.5px;outline:none}
+  input:focus{border-color:var(--accent)}
+  button.send{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:0 16px;font-weight:600;cursor:pointer}
+  button.send:disabled{opacity:.4;cursor:default}
+  .mini .log,.mini form,.mini .count{display:none}
+  .unread{background:#ff5470;color:#fff;border-radius:9px;font-size:11px;font-weight:700;padding:1px 7px;display:none}
+  .gate{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}
+  .gate-card{width:100%;max-width:300px;display:flex;flex-direction:column;gap:10px}
+  .gate-card h1{font-size:20px;margin:0 0 6px}
+  .gate-card button{background:var(--accent);color:#fff;border:none;border-radius:6px;padding:11px;font-weight:600;cursor:pointer}
+  .placeholder{display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <div class="top">
+    <span class="title">Chatroom <span class="unread" id="unread"></span></span>
+    <div class="top-right">
+      <span class="count" id="count">connecting…</span>
+      <button class="tbtn" id="miniBtn" style="display:none">Minimise</button>
+      <button class="tbtn" id="popBtn">Pop out</button>
+    </div>
+  </div>
+  <div class="log" id="log"></div>
+  <form id="form">
+    <input id="input" placeholder="Message…" maxlength="500" autocomplete="off" disabled>
+    <button class="send" disabled id="send">Send</button>
+  </form>
+</div>
+
+<div class="placeholder" id="placeholder">
+  <div>Chat is popped out. Keep this tab open.</div>
+  <button class="tbtn" id="backBtn">Bring it back</button>
+</div>
+
+<div class="gate" id="gate">
+  <div class="gate-card">
+    <h1>Pick a name</h1>
+    <input id="nameInput" placeholder="Your name" maxlength="20" autocomplete="off">
+    <button id="joinBtn">Join</button>
+  </div>
+</div>
+
+<script>
+// Cache element refs once, so they keep working after the chat moves into the popup window.
+const el = {};
+['wrap','log','input','send','form','count','popBtn','miniBtn','unread','placeholder','backBtn','gate','nameInput','joinBtn']
+  .forEach((id) => { el[id] = document.getElementById(id); });
+
+let name = localStorage.getItem('chatroom-name') || '';
+let ws, pipWin = null, unread = 0, fullHeight = 480;
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+function scrollDown(){el.log.scrollTop=el.log.scrollHeight;}
+function add(m){
+  const d=document.createElement('div');
+  d.innerHTML='<div class="msg-name">'+esc(m.name)+'</div><div class="msg-text">'+esc(m.text)+'</div>';
+  el.log.appendChild(d); scrollDown();
+}
+function sys(t){
+  const d=document.createElement('div');d.className='sys';d.textContent=t;
+  el.log.appendChild(d); scrollDown();
+}
+function bumpUnread(){
+  if (!el.wrap.classList.contains('mini')) return;
+  unread++; el.unread.textContent=unread; el.unread.style.display='inline-block';
+}
+function clearUnread(){ unread=0; el.unread.style.display='none'; }
+
+function connect(){
+  ws=new WebSocket((location.protocol==='https:'?'wss':'ws')+'://'+location.host);
+  ws.onclose=()=>{sys('Disconnected, reconnecting…');setTimeout(connect,2000);};
+  ws.onmessage=(e)=>{
+    const d=JSON.parse(e.data);
+    if(d.type==='history'){el.log.innerHTML='';d.messages.forEach(add);}
+    else if(d.type==='chat'){add(d.message); if(d.message.name!==name) bumpUnread();}
+    else if(d.type==='count')el.count.textContent=d.count+' online';
+  };
+}
+
+function join(n){
+  n=n.trim();if(!n)return;
+  name=n;localStorage.setItem('chatroom-name',n);
+  el.gate.style.display='none';
+  el.input.disabled=false;el.send.disabled=false;el.input.focus();
+}
+
+el.joinBtn.onclick=()=>join(el.nameInput.value);
+el.nameInput.onkeydown=(e)=>{if(e.key==='Enter')join(el.nameInput.value);};
+el.form.onsubmit=(e)=>{
+  e.preventDefault();
+  const t=el.input.value.trim();
+  if(!t||!ws||ws.readyState!==1)return;
+  ws.send(JSON.stringify({type:'chat',name,text:t}));
+  el.input.value='';
+};
+
+// ---------- Pop out (Document Picture-in-Picture) ----------
+el.popBtn.onclick=async()=>{
+  if (pipWin) { pipWin.close(); return; }
+  if (!('documentPictureInPicture' in window)) { sys('Pop out needs Chrome or Edge on desktop.'); return; }
+  try {
+    pipWin = await documentPictureInPicture.requestWindow({ width: 340, height: 480 });
+  } catch (err) { sys('Could not open the popup.'); return; }
+
+  const st = pipWin.document.createElement('style');
+  st.textContent = document.getElementById('appStyle').textContent;
+  pipWin.document.head.appendChild(st);
+  pipWin.document.title = 'Chatroom';
+  pipWin.document.body.appendChild(el.wrap);
+
+  el.placeholder.style.display='flex';
+  el.popBtn.textContent='Dock';
+  el.miniBtn.style.display='';
+  scrollDown(); el.input.focus();
+
+  pipWin.addEventListener('pagehide', () => {
+    el.wrap.classList.remove('mini'); clearUnread();
+    document.body.insertBefore(el.wrap, el.placeholder);
+    el.placeholder.style.display='none';
+    el.popBtn.textContent='Pop out';
+    el.miniBtn.style.display='none';
+    el.miniBtn.textContent='Minimise';
+    pipWin=null; scrollDown();
+  });
+};
+
+el.miniBtn.onclick=()=>{
+  if (!pipWin) return;
+  const mini = el.wrap.classList.toggle('mini');
+  el.miniBtn.textContent = mini ? 'Expand' : 'Minimise';
+  try {
+    if (mini) { fullHeight = pipWin.outerHeight; pipWin.resizeTo(pipWin.outerWidth, 90); }
+    else { pipWin.resizeTo(pipWin.outerWidth, Math.max(fullHeight, 320)); clearUnread(); scrollDown(); el.input.focus(); }
+  } catch (err) {}
+};
+
+el.backBtn.onclick=()=>{ if (pipWin) pipWin.close(); };
+
+if(name)join(name);
+connect();
+</script>
+</body>
+</html>
